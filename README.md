@@ -9,6 +9,10 @@ authentication filters (keystone, tempauth, etc) in the pipeline, but prior to t
 PasteDeploy reference:
 http://pythonhosted.org/twod.wsgi/manual/paste-factory.html
 
+Dependencies
+------------
+This module depends heavily on the fujita swift3 (http://github.com/fujita/swift3) version 1.7.0 or later.
+
 Install
 -------
 1) Install S3Multi with ``sudo python setup.py install`` or ``sudo python
