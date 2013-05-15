@@ -27,7 +27,7 @@ Example Using Keystone:
 		pipeline = catch_errors cache swift3 s3token tempurl authtoken keystone s3multi proxy-logging proxy-server
 		                                                                        ^^^^^^^
 
-3) Add to your proxy-server.conf the section for the s3multi WSGI filter:
+3) Add the s3multi filter definition to the end of /etc/swift/proxy-server.conf:
 
 	[filter:s3multi]
 	use = egg:s3multi#s3multi
