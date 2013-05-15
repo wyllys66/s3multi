@@ -11,8 +11,6 @@ http://pythonhosted.org/twod.wsgi/manual/paste-factory.html
 
 Install
 -------
-'s3multi' goes into the [pipeline:main] section:
-
 1) Install S3Multi with ``sudo python setup.py install`` or ``sudo python
    setup.py develop`` or via whatever packaging system you may be using.
 
@@ -20,16 +18,17 @@ Install
 
 Example Using Keystone:
 
-	Was::
+	Was:
 	[pipeline:main]
 		pipeline = catch_errors cache swift3 s3token tempurl authtoken keystone proxy-logging proxy-server
        
-	New::
+	New:
 	[pipeline:main]
 		pipeline = catch_errors cache swift3 s3token tempurl authtoken keystone s3multi proxy-logging proxy-server
 		                                                                        ^^^^^^^
 
-3) Add to your proxy-server.conf the section for the s3multi WSGI filter::
+3) Add to your proxy-server.conf the section for the s3multi WSGI filter:
+
 	[filter:s3multi]
 	use = egg:s3multi#s3multi
 
