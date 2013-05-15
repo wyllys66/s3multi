@@ -621,7 +621,6 @@ class S3MultiMiddleware(WSGIContext):
                                 int(partNo)))
             env['RAW_PATH_INFO'] = ('/%s_segments/%s/%s/%08d' %
                                     (container, obj, uploadId, int(partNo)))
-            self.logger.debug('NEW PATH: %s' % env['PATH_INFO'])
 
         return self.app(env, start_response)
 
