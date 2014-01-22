@@ -113,12 +113,12 @@ def get_err_response(code):
             'match your provided one'),
         'RequestTimeTooSkewed':
         (HTTP_FORBIDDEN, 'The difference between the request time and the'
-        ' current time is too large'),
+            ' current time is too large'),
         'NoSuchKey':
         (HTTP_NOT_FOUND, 'The resource you requested does not exist'),
         'Unsupported':
         (HTTP_NOT_IMPLEMENTED, 'The feature you requested is not yet'
-        ' implemented'),
+            ' implemented'),
         'MissingContentLength':
         (HTTP_LENGTH_REQUIRED, 'Length Required'),
         'ServiceUnavailable':
@@ -153,6 +153,186 @@ class S3MultiMiddleware(WSGIContext):
             num = 0
         return num
 
+    def get_bucket_objects(self, req, env):
+        parts = urlparse.urlparse(req.url)
+        version, auth, container, obj = split_path(parts.path, 0, 4, True)
+
+        env['REQUEST_METHOD'] = 'GET'
+        env['PATH_INFO'] = ('/%s/%s/%s' % (version, auth, container))
+        env['RAW_PATH_INFO'] = ('/%s/%s/%s' % (version, auth, container))
+        env['QUERY_STRING'] = 'format=json&limit=1001&&delimiter=/'
+        env['SCRIPT_NAME'] = ''
+
+        app_iter = self._app_call(env)
+        status = self._get_status_int()
+        if is_success(status):
+            objects = loads(''.join(list(app_iter)))
+        else:
+            objects = ()
+        return objects
+
+    def get_object_size(self, env, objname):
+        req = Request(env)
+        parts = urlparse.urlparse(req.url)
+        version, auth, container, obj = split_path(parts.path, 0, 4, True)
+
+        env['REQUEST_METHOD'] = 'HEAD'
+        env['PATH_INFO'] = ('/%s/%s/%s/%s' % (version, auth, container,
+                            objname))
+        env['RAW_PATH_INFO'] = ('/%s/%s/%s/%s' % (version, auth, container,
+                                objname))
+        env['SCRIPT_NAME'] = ''
+        env['QUERY_STRING'] = 'format=json&limit=1001&&delimiter=/'
+
+        self._app_call(env)
+        headers = headers = dict(self._response_headers)
+        if 'content-length' in headers:
+            return int(headers['content-length'])
+
+        return 0
+
+    def HEAD(self, env, start_response):
+        req = Request(env)
+
+        body_iter = self._app_call(env)
+        status = self._get_status_int()
+        headers = dict(self._response_headers)
+
+        parts = urlparse.urlparse(req.url)
+        version, auth, container, obj = split_path(parts.path, 0, 4, True)
+        #
+        # Check for tell-tale sign that the caller wants HEAD status of
+        # a DLO container.
+        #
+        if is_success(status) and container is not None and obj is None and \
+            'x-container-object-count' in headers and \
+                'x-container-bytes-used' in headers:
+            objcount = headers['x-container-object-count']
+            bytesused = headers['x-container-bytes-used']
+            objsize = 0
+            if int(objcount) > 0 and int(bytesused) == 0:
+                objects = self.get_bucket_objects(req, env)
+                for o in objects:
+                    objsize += self.get_object_size(env, o['name'])
+
+            headers['x-container-bytes-used'] = ('%s' % objsize)
+
+        resp = Response(status=status, headers=headers, app_iter=body_iter)
+        return resp(env, start_response)
+
+    def GET_uploads(self, env, start_response):
+        if 'QUERY_STRING' in env:
+            args = dict(urlparse.parse_qsl(env['QUERY_STRING'], 1))
+        else:
+            args = {}
+
+        req = Request(env)
+
+        parts = urlparse.urlparse(req.url)
+        version, auth, container, obj = split_path(parts.path, 0, 4, True)
+
+        env['PATH_INFO'] = ('/%s/%s/%s_segments/' % (version, auth, container))
+        env['RAW_PATH_INFO'] = ('/%s/%s/%s_segments/' % (version, auth,
+                                container))
+
+        keyword, info = req.headers['Authorization'].split(' ')
+        account, signature = info.rsplit(':', 1)
+
+        maxuploads = 1000
+        prefix = ''
+        delimiter = ''
+        keymarker = ''
+        uploadid = ''
+        if 'max-uploads' in args:
+            try:
+                maxuploads = int(args['max-uploads'])
+            except:
+                pass
+        if 'key-marker' in args:
+            keymarker = args['key-marker']
+        if 'upload-id-marker' in args:
+            uploadid = args['upload-id-marker']
+        if 'prefix' in args:
+            prefix = '&prefix=%s' % args['prefix']
+        if 'delimiter' in args:
+            delimiter = '&delimiter=%s' % args['delimiter']
+
+        if uploadid and keymarker:
+            prefix = '&prefix=%s/%s/' % (keymarker, uploadid)
+        elif keymarker:
+            prefix = '&prefix=%s/' % keymarker
+
+        env['QUERY_STRING'] = 'format=json&limit=%d%s%s' % \
+                              (maxuploads, prefix, delimiter)
+        body_iter = self._app_call(env)
+        status = self._get_status_int()
+
+        if is_success(status) is False:
+            if status == HTTP_UNAUTHORIZED:
+                return get_err_response('AccessDenied')
+            elif status == HTTP_NOT_FOUND:
+                return get_err_response('NoSuchBucket')
+            else:
+                return get_err_response('InvalidURI')
+
+        objects = loads(''.join(list(body_iter)))
+        objdict = {}
+        for o in objects:
+            parts = split_path('/' + o['name'], 1, 4)
+            if parts[1] not in objdict:
+                objdict[parts[1]] = {'key': parts[0],
+                                     'last_modified': o['last_modified']}
+
+        objkeys = objdict.keys()
+        if maxuploads > 0 and len(objkeys) > maxuploads:
+            truncated = True
+        else:
+            truncated = False
+
+        nextkeymarker = ''
+        nextuploadmarker = ''
+        if len(objkeys) > 1:
+            objid = objkeys[1]
+            o = objdict[objid]
+            nextuploadmarker = o.keys()[0]
+            nextkeymarker = o['key']
+
+        body = ('<?xml version="1.0" encoding="UTF-8"?>'
+                '<ListMultipartUploadsResult '
+                'xmlns="http://s3.amazonaws.com/doc/2006-03-01">'
+                '<Bucket>%s</Bucket>'
+                '<KeyMarker>%s</KeyMarker>'
+                '<UploadIdMarker>%s</UploadIdMarker>'
+                '<NextKeyMarker>%s</NextKeyMarker>'
+                '<NextUploadIdMarker>%s</NextUploadIdMarker>'
+                '<MaxUploads>%d</MaxUploads>'
+                '<IsTruncated>%s</IsTruncated>' %
+                (xml_escape(container),
+                 xml_escape(keymarker),
+                 xml_escape(uploadid),
+                 nextkeymarker, nextuploadmarker,
+                 maxuploads,
+                 'true' if truncated else 'false'))
+
+        looped = "".join(['<Upload>'
+                          '<Key>%s</Key>'
+                          '<UploadId>%s</UploadId>'
+                          '<Initiator><ID>%s</ID><DisplayName>%s</DisplayName>'
+                          '</Initiator>'
+                          '<Owner><ID>%s</ID>'
+                          '<DisplayName>%s</DisplayName></Owner>'
+                          '<StorageClass>STANDARD</StorageClass>'
+                          '<Initiated>%s</Initiated>'
+                          '</Upload>'
+                          % (objdict[i]['key'], i, account, account,
+                             account, account, objdict[i]['last_modified'])
+                          for i in objdict.keys()])
+
+        body = body + looped + '</ListMultipartUploadsResult>'
+
+        return Response(status=HTTP_OK, body=body,
+                        content_type='application/xml')
+
     def GET(self, env, start_response):
         if 'QUERY_STRING' in env:
             args = dict(urlparse.parse_qsl(env['QUERY_STRING'], 1))
@@ -163,11 +343,12 @@ class S3MultiMiddleware(WSGIContext):
         # If 'uploadId' parameter is not present, then pass it along as a
         # standard 'GET' request
         #
-        if 'uploadId' not in args:
+        if 'uploadId' not in args and 'uploads' not in args:
             return self.app(env, start_response)
 
         req = Request(env)
-        uploadId = args['uploadId']
+        if 'uploadId' in args:
+            uploadId = args['uploadId']
 
         if 'Authorization' not in req.headers:
             return get_err_response('AccessDenied')(env, start_response)
@@ -182,6 +363,9 @@ class S3MultiMiddleware(WSGIContext):
             account, signature = info.rsplit(':', 1)
         except:
             return get_err_response('InvalidArgument')(env, start_response)
+
+        if 'uploads' in args:
+                return self.GET_uploads(env, start_response)
 
         maxparts = 1000
         partNumMarker = 0
@@ -204,7 +388,6 @@ class S3MultiMiddleware(WSGIContext):
                                 container))
         env['QUERY_STRING'] = 'format=json&limit=1001&prefix=%s/%s/' \
                               '&delimiter=/' % (obj, uploadId)
-
         body_iter = self._app_call(env)
         status = self._get_status_int()
 
@@ -253,13 +436,12 @@ class S3MultiMiddleware(WSGIContext):
                 '<StorageClass>STANDARD</StorageClass>'
                 '<IsTruncated>%s</IsTruncated>'
                 '<MaxParts>%d</MaxParts>' %
-                (
-                xml_escape(container),
-                xml_escape(obj),
-                uploadId,
-                account, account, account, account,
-                'true' if truncated else 'false',
-                maxparts))
+                (xml_escape(container),
+                 xml_escape(obj),
+                 uploadId,
+                 account, account, account, account,
+                 'true' if truncated else 'false',
+                 maxparts))
 
         if len(objList) > 0:
             o = objList[0]
@@ -293,9 +475,12 @@ class S3MultiMiddleware(WSGIContext):
 
         uploadId = args['uploadId']
 
-        parts = urlparse.urlparse(req.url)
-        version, auth, container, obj = split_path(parts.path, 0, 4, True)
+        urlparts = urlparse.urlparse(req.url)
+        version, auth, ignored = split_path(urlparts.path, 2, 3, True)
 
+        # We must get the actual container/object info from the RAW_PATH_INFO
+        path = env['RAW_PATH_INFO']
+        container, obj = split_path(path, 0, 2, True)
         if obj is None:
             obj = os.path.basename(env['RAW_PATH_INFO'])
 
@@ -357,10 +542,11 @@ class S3MultiMiddleware(WSGIContext):
                 '<Key>%s</Key>'
                 '<ETag>"%s"</ETag>'
                 '</CompleteMultipartUploadResult>' %
-                (parts.scheme, parts.netloc, container, obj, container,
-                o['name'], o['hash']))
+                (urlparts.scheme, urlparts.netloc, container, obj, container,
+                 o['name'], o['hash']))
 
         resp = Response(body=body, content_type="application/xml")
+
         return resp
 
     def POST(self, env, start_response):
@@ -469,6 +655,7 @@ class S3MultiMiddleware(WSGIContext):
 
         body_iter = self._app_call(env)
         status = self._get_status_int()
+
         if is_success(status):
             # The object was found, so we must return an error
             return get_err_response('NoSuchUpload')
@@ -493,6 +680,7 @@ class S3MultiMiddleware(WSGIContext):
 
         body_iter = self._app_call(env)
         status = self._get_status_int()
+
         if not is_success(status):
             if status == HTTP_UNAUTHORIZED:
                 return get_err_response('AccessDenied')
@@ -534,12 +722,16 @@ class S3MultiMiddleware(WSGIContext):
             else:
                 return get_err_response('InvalidURI')
 
-        return Response(status=204, body='')
+        resp = Response(status=204, body='')
+        return resp(env, start_response)
 
     def handle_request(self, env, start_response):
         req = Request(env)
         self.logger.debug('Calling S3Multipart Helper Middleware')
         #self.logger.debug(req.__dict__)
+        #self.logger.info('S3MULTI --')
+        #self.logger.info('S3MULTI: %s %s' % (req.method, req.url))
+        #self.logger.info('S3MULTI --')
 
         #
         # Check that the request has the correct AA headers
@@ -568,6 +760,8 @@ class S3MultiMiddleware(WSGIContext):
 
         if req.method == 'GET':
             return self.GET(env, start_response)
+        elif req.method == 'HEAD':
+            return self.HEAD(env, start_response)
         elif req.method == 'POST':
             return self.POST(env, start_response)
         elif req.method == 'DELETE':
@@ -618,7 +812,7 @@ class S3MultiMiddleware(WSGIContext):
             version, account, container, obj = split_path(path, 0, 4, True)
             env['PATH_INFO'] = ('/%s/%s/%s_segments/%s/%s/%d' %
                                 (version, account, container, obj, uploadId,
-                                int(partNo)))
+                                 int(partNo)))
             env['RAW_PATH_INFO'] = ('/%s_segments/%s/%s/%08d' %
                                     (container, obj, uploadId, int(partNo)))
 
