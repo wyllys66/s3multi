@@ -383,6 +383,22 @@ class S3MultiMiddleware(WSGIContext):
         parts = urlparse.urlparse(req.url)
         version, auth, container, obj = split_path(parts.path, 0, 4, True)
 
+        # check if upload was completed or not.
+
+        req.method = 'GET'
+        env['PATH_INFO'] = ('/%s/%s/%s/%s' % (version, auth, container, obj))
+        env['RAW_PATH_INFO'] = ('/%s/%s/%s/%s' % (version, auth,
+                                                  container, obj))
+        del env['QUERY_STRING']
+        env['SCRIPT_NAME'] = ''
+
+        body_iter = self._app_call(env)
+        status = self._get_status_int()
+
+        if is_success(status):
+            return get_err_response('NoSuchUpload')
+
+        # fetch all upload parts.
         env['PATH_INFO'] = ('/%s/%s/%s_segments/' % (version, auth, container))
         env['RAW_PATH_INFO'] = ('/%s/%s/%s_segments/' % (version, auth,
                                 container))
