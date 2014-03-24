@@ -543,7 +543,7 @@ class S3MultiMiddleware(WSGIContext):
                 '<ETag>"%s"</ETag>'
                 '</CompleteMultipartUploadResult>' %
                 (urlparts.scheme, urlparts.netloc, container, obj, container,
-                 o['name'], o['hash']))
+                obj, o['hash']))
 
         resp = Response(body=body, content_type="application/xml")
 
