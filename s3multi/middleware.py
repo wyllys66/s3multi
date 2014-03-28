@@ -141,10 +141,11 @@ class S3MultiMiddleware(WSGIContext):
 
     def __call__(self, env, start_response):
         try:
-            return self.handle_request(env, start_response)
+            resp = self.handle_request(env, start_response)
         except Exception, e:
             self.logger.exception(e)
-        return get_err_response('ServiceUnavailable')(env, start_response)
+            resp = get_err_response('ServiceUnavailable')
+        return resp(env, start_response)
 
     def getObjNum(self, object):
         try:
@@ -217,8 +218,7 @@ class S3MultiMiddleware(WSGIContext):
 
             headers['x-container-bytes-used'] = ('%s' % objsize)
 
-        resp = Response(status=status, headers=headers, app_iter=body_iter)
-        return resp(env, start_response)
+        return Response(status=status, headers=headers, app_iter=body_iter)
 
     def GET_uploads(self, env, start_response):
         if 'QUERY_STRING' in env:
@@ -344,25 +344,25 @@ class S3MultiMiddleware(WSGIContext):
         # standard 'GET' request
         #
         if 'uploadId' not in args and 'uploads' not in args:
-            return self.app(env, start_response)
+            return self.app
 
         req = Request(env)
         if 'uploadId' in args:
             uploadId = args['uploadId']
 
         if 'Authorization' not in req.headers:
-            return get_err_response('AccessDenied')(env, start_response)
+            return get_err_response('AccessDenied')
         try:
             keyword, info = req.headers['Authorization'].split(' ')
         except:
-            return get_err_response('AccessDenied')(env, start_response)
+            return get_err_response('AccessDenied')
 
         if keyword != 'AWS':
-            return get_err_response('AccessDenied')(env, start_response)
+            return get_err_response('AccessDenied')
         try:
             account, signature = info.rsplit(':', 1)
         except:
-            return get_err_response('InvalidArgument')(env, start_response)
+            return get_err_response('InvalidArgument')
 
         if 'uploads' in args:
                 return self.GET_uploads(env, start_response)
@@ -561,9 +561,7 @@ class S3MultiMiddleware(WSGIContext):
                 (urlparts.scheme, urlparts.netloc, container, obj, container,
                 obj, o['hash']))
 
-        resp = Response(body=body, content_type="application/xml")
-
-        return resp
+        return Response(body=body, content_type="application/xml")
 
     def POST(self, env, start_response):
         req = Request(env)
@@ -619,14 +617,13 @@ class S3MultiMiddleware(WSGIContext):
                     '</InitiateMultipartUploadResult>\r\n'
                     % (container, obj, upload_id))
 
-            resp = Response(status=200, body=body,
+            return Response(status=200, body=body,
                             content_type='application/xml')
-            return resp
         elif 'uploadId' in args:
             # Handle an individual S3 multipart upload segment
             return self.completeMultipartUpload(env, start_response)
         else:
-            return self.app(env, start_response)
+            return self.app
 
     def DELETE(self, env, start_response):
         req = Request(env)
@@ -651,7 +648,7 @@ class S3MultiMiddleware(WSGIContext):
             args = {}
 
         if 'uploadId' not in args:
-            return self.app(env, start_response)
+            return self.app
 
         uploadId = args['uploadId']
 
@@ -738,8 +735,7 @@ class S3MultiMiddleware(WSGIContext):
             else:
                 return get_err_response('InvalidURI')
 
-        resp = Response(status=204, body='')
-        return resp(env, start_response)
+        return Response(status=204, body='')
 
     def handle_request(self, env, start_response):
         req = Request(env)
@@ -758,21 +754,21 @@ class S3MultiMiddleware(WSGIContext):
                 req.headers['Authorization'] = \
                     'AWS %(AWSAccessKeyId)s:%(Signature)s' % req.params
             except KeyError:
-                return get_err_response('InvalidArgument')(env, start_response)
+                return get_err_response('InvalidArgument')
 
         if 'Authorization' not in req.headers:
-            return self.app(env, start_response)
+            return self.app
         try:
             keyword, info = req.headers['Authorization'].split(' ')
         except:
-            return get_err_response('AccessDenied')(env, start_response)
+            return get_err_response('AccessDenied')
 
         if keyword != 'AWS':
-            return get_err_response('AccessDenied')(env, start_response)
+            return get_err_response('AccessDenied')
         try:
             account, signature = info.rsplit(':', 1)
         except:
-            return get_err_response('InvalidArgument')(env, start_response)
+            return get_err_response('InvalidArgument')
 
         if req.method == 'GET':
             return self.GET(env, start_response)
@@ -783,7 +779,7 @@ class S3MultiMiddleware(WSGIContext):
         elif req.method == 'DELETE':
             return self.DELETE(env, start_response)
         elif req.method != 'PUT':
-            return self.app(env, start_response)
+            return self.app
 
         #
         # If none of the above, it must be a PUT
@@ -832,7 +828,7 @@ class S3MultiMiddleware(WSGIContext):
             env['RAW_PATH_INFO'] = ('/%s_segments/%s/%s/%08d' %
                                     (container, obj, uploadId, int(partNo)))
 
-        return self.app(env, start_response)
+        return self.app
 
 
 def filter_factory(global_conf, **local_conf):
